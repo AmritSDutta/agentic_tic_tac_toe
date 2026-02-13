@@ -1,0 +1,12 @@
+make your move.
+
+YOUR SYMBOL: {{SYMBOL}}
+BOARD STATE:
+{{BOARD}}
+
+OUTPUT FORMAT (STRICT):
+Return only:
+
+    row,col
+
+No other text, punctuation, or formatting.

@@ -1,12 +1,12 @@
 import asyncio
 import os
-import re
 import sys
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from src.game_console import PygameGame
+from src.tic_tac_toe.core_functions import valid_move, check_winner, parse_coord, get_token_used
 
 # Add src directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -16,7 +16,6 @@ from langchain_core.messages import AIMessage
 from langchain_ollama import ChatOllama
 from langgraph.graph import StateGraph, START, END
 from langgraph.types import Command
-from sarvam.chat.model import SarvamChat
 from typing_extensions import TypedDict
 
 load_dotenv()
@@ -37,36 +36,6 @@ def load_prompt(filename: str) -> str:
 
 SYSTEM_PROMPT = load_prompt('system_prompt.txt')
 PLAYER_TEMPLATE = load_prompt('player_template.txt')
-
-
-def _parse_coord(s: str) -> tuple[int, int] | None:
-    m = re.search(r"(-?\d+)\s*[, ]\s*(-?\d+)", s)
-    if not m:
-        return None
-    return int(m.group(1)), int(m.group(2))
-
-
-def _valid_move(board, i, j):
-    return 0 <= i < 3 and 0 <= j < 3 and board[i][j] == '.'
-
-
-def _check_winner(b):
-    lines = ([(r, c) for c in range(3)] for r in range(3))  # rows generator
-    wins = []
-    for r in range(3):
-        if b[r][0] == b[r][1] == b[r][2] != '.':
-            return b[r][0]
-    for c in range(3):
-        if b[0][c] == b[1][c] == b[2][c] != '.':
-            return b[0][c]
-    if b[0][0] == b[1][1] == b[2][2] != '.':
-        return b[0][0]
-    if b[0][2] == b[1][1] == b[2][0] != '.':
-        return b[0][2]
-    if all(cell != '.' for row in b for cell in row):
-        return 'DRAW'
-    return None
-
 
 # Initialize pygame game instance
 pygame_game = PygameGame()
@@ -107,7 +76,7 @@ async def coordinator_node(state: State):
     i, j = state.moves
     symbol = state.last_player
     # Validate move
-    if not _valid_move(state.board, i, j):
+    if not valid_move(state.board, i, j):
         return Command(
             update={"game_status": f"Invalid move {(i, j)} by {symbol}"},
             goto=END
@@ -117,7 +86,7 @@ async def coordinator_node(state: State):
     state.print_box()
 
     # Check win conditions first
-    result = _check_winner(state.board)
+    result = check_winner(state.board)
 
     # Update pygame display with new board state
     game_status = None
@@ -150,10 +119,6 @@ async def coordinator_node(state: State):
     )
 
 
-def get_token_used(response: AIMessage):
-    return response.usage_metadata['total_tokens']
-
-
 def get_human_move(state):
     """
     Get human move through pygame UI by waiting for user to click a cell.
@@ -180,15 +145,6 @@ async def run_single_game():
         }
     )
 
-    player_two_agent = SarvamChat(
-        model=player_two_model,
-        reasoning_effort="medium",
-        temperature=0.3,
-        max_retry=3,
-        wiki_grounding=False,
-        top_p=0.9
-    )
-
     # Define node functions that capture fresh agents via closure
     async def player_one_node(state: State):
         print(f'{player_one_model} move:')
@@ -199,7 +155,7 @@ async def run_single_game():
         prompt = SYSTEM_PROMPT + '\n' + prompt
         response: AIMessage = await player_one_agent.ainvoke(prompt)
 
-        coord = _parse_coord(response.content)
+        coord = parse_coord(response.content)
         if coord is None:
             raise ValueError(f"unparsable move: {response}")
         p1_token_used_till_now = state.player_one_token + get_token_used(response)
