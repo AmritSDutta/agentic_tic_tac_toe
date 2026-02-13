@@ -189,6 +189,14 @@ agentic_tic_tac_toe/
 
 Want to add a new model? Edit `src/llms/llm_options.py`. Want to make the AI dumber? Edit `src/prompts/system_prompt.txt`. We won't stop you.
 
+## Credits & Acknowledgments
+
+**Main Game Logic:** Built by me (for my kid - you're welcome!)
+
+**Pygame UI & Test Cases:** Developed with assistance from [Claude Code](https://claude.com/claude-code), Anthropic's AI coding assistant. Because building UIs from scratch is painful, and sometimes you need an AI to help you build an AI game.
+
+---
+
 ## License
 
 [Your License Here]
