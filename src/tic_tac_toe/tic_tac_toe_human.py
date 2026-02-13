@@ -6,6 +6,8 @@ import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from src.game_console import PygameGame
+
 # Add src directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -16,7 +18,6 @@ from langgraph.graph import StateGraph, START, END
 from langgraph.types import Command
 from sarvam.chat.model import SarvamChat
 from typing_extensions import TypedDict
-from game_console import PygameGame
 
 load_dotenv()
 player_one_model = 'gemini-3-flash-preview:cloud'
@@ -24,53 +25,18 @@ player_two_model = 'human'
 os.environ["LANGSMITH_TRACING_V2"] = 'false'
 os.environ["LANGSMITH_PROJECT"] = f"[{player_one_model}]_vs_[{player_two_model}]"
 
-SYSTEM_PROMPT = """
-You are an autonomous Tic-Tac-Toe agent.
-GENERAL RULES:
-1. You play exactly one move per turn.
-2. A move must target a cell that currently contains '.' (empty).
-3. Choose the strongest legal move for {{SYMBOL}} only.
-4. Never choose a filled cell.
-5. Never describe reasoning, analysis, or commentary.
+
+def load_prompt(filename: str) -> str:
+    """Load a prompt from the prompts directory."""
+    # From src/tic_tac_toe/file.py, go up to src/, then into prompts/
+    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    prompt_path = os.path.join(base_dir, 'prompts', filename)
+    with open(prompt_path, 'r', encoding='utf-8') as f:
+        return f.read().strip()
 
 
-OBJECTIVE:
-Maximize your chance of winning and minimize opponent advantage.
-
-WIN-MAXIMIZATION STRATEGY (APPLY IN ORDER):
-1. Immediate Win: play any move that wins instantly.
-2. Block Opponent: if opponent can win next turn, block that move.
-3. Center: take (1,1) if empty.
-4. Corners: take any available corner.
-5. Best Available: choose the most advantageous remaining empty cell.
-
-RULES:
-- You must pick exactly one empty cell.
-- Never select a filled square.
-- No explanations.
-
-OUTPUT FORMAT (STRICT):
-Return only:
-
-    row,col
-
-No other text, punctuation, or formatting.
-"""
-
-PLAYER_TEMPLATE = """
-make your move.
-
-YOUR SYMBOL: {{SYMBOL}}
-BOARD STATE:
-{{BOARD}}
-
-OUTPUT FORMAT (STRICT):
-Return only:
-
-    row,col
-
-No other text, punctuation, or formatting.
-"""
+SYSTEM_PROMPT = load_prompt('system_prompt.txt')
+PLAYER_TEMPLATE = load_prompt('player_template.txt')
 
 
 def _parse_coord(s: str) -> tuple[int, int] | None:
