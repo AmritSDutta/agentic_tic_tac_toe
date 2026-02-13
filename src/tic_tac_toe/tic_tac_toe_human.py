@@ -12,9 +12,6 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from dotenv import load_dotenv
 from langchain_core.messages import AIMessage
 from langchain_ollama import ChatOllama
-from langfuse import get_client
-from langfuse import observe
-from langfuse.langchain import CallbackHandler
 from langgraph.graph import StateGraph, START, END
 from langgraph.types import Command
 from sarvam.chat.model import SarvamChat
@@ -24,16 +21,8 @@ from game_console import PygameGame
 load_dotenv()
 player_one_model = 'gemini-3-flash-preview:cloud'
 player_two_model = 'human'
-os.environ["LANGSMITH_TRACING_V2"] = 'true'
+os.environ["LANGSMITH_TRACING_V2"] = 'false'
 os.environ["LANGSMITH_PROJECT"] = f"[{player_one_model}]_vs_[{player_two_model}]"
-
-# Verify connection
-langfuse = get_client()
-langfuse_handler = CallbackHandler()
-if langfuse.auth_check():
-    print("Langfuse client is authenticated and ready!")
-else:
-    print("Authentication failed. Please check your credentials and host.")
 
 SYSTEM_PROMPT = """
 You are an autonomous Tic-Tac-Toe agent.
@@ -113,27 +102,10 @@ def _check_winner(b):
     return None
 
 
-player_one_agent = ChatOllama(
-    model=player_one_model,
-    base_url="https://ollama.com",  # Cloud endpoint
-    client_kwargs={
-        "headers": {"Authorization": "Bearer " + os.getenv("OLLAMA_API_KEY")},
-        "timeout": 60.0  # Timeout in seconds
-    }
-)
-
-player_two_agent = SarvamChat(
-    model=player_two_model,
-    reasoning_effort="medium",
-    temperature=0.3,
-    max_retry=3,
-    wiki_grounding=False,
-    top_p=0.9
-)
-
 # Initialize pygame game instance
 pygame_game = PygameGame()
-game_complete_event = threading.Event()
+restart_game_event = threading.Event()
+continue_running = True
 
 
 class Context(TypedDict):
@@ -159,7 +131,6 @@ class State:
         return 0 <= i < 3 and 0 <= j < 3 and self.board[i][j] == '.'
 
 
-@observe(name="coordinator_node")
 async def coordinator_node(state: State):
     if state.last_player is None:
         return Command(
@@ -215,31 +186,6 @@ def get_token_used(response: AIMessage):
     return response.usage_metadata['total_tokens']
 
 
-@observe(name=player_one_model, as_type='agent')
-async def player_one_node(state: State):
-    print(f'{player_one_model} move:')
-
-    prompt = (PLAYER_TEMPLATE
-              .replace("{{SYMBOL}}", "O")
-              .replace("{{BOARD}}", str(state.board)))
-    prompt = SYSTEM_PROMPT + '\n' + prompt
-    response: AIMessage = await player_one_agent.ainvoke(prompt)
-
-    coord = _parse_coord(response.content)
-    if coord is None:
-        raise ValueError(f"unparsable move: {response}")
-    p1_token_used_till_now = state.player_one_token + get_token_used(response)
-
-    return Command(
-        update={"board": state.board,
-                'last_player': "O",
-                'moves': coord,
-                'player_one_token': p1_token_used_till_now
-                },
-        goto='coordinator_node'
-    )
-
-
 def get_human_move(state):
     """
     Get human move through pygame UI by waiting for user to click a cell.
@@ -251,50 +197,88 @@ def get_human_move(state):
     return pygame_game.wait_for_human_move()
 
 
-@observe(name=player_two_model, as_type='agent')
-async def player_two_node(state: State):
-    print(f'{player_two_model} move:')
-
-    # Manually create a span for the LLM call
-    # Run blocking human move in thread pool to avoid blocking event loop
-    loop = asyncio.get_event_loop()
-    coord = await loop.run_in_executor(None, lambda: get_human_move(state))
-
-    if coord is None:
-        raise ValueError(f"unparsable move: {coord}")
-
-    p2_token_used_till_now = state.player_two_token + 0
-    return Command(update={"board": state.board,
-                           'last_player': "X",
-                           'moves': coord,
-                           'player_two_token': p2_token_used_till_now},
-                   goto='coordinator_node')
-
-
-# Build graph
-builder = (
-    StateGraph(State, context_schema=Context)
-    .add_node("coordinator_node", coordinator_node)
-    .add_node("player_one_node", player_one_node)
-    .add_node("player_two_node", player_two_node)
-    .add_edge(START, "coordinator_node")
-    .add_edge("player_one_node", "coordinator_node")
-    .add_edge("player_two_node", "coordinator_node")
-)
-
-graph = builder.compile()
-
-
 # ============ ASYNC EXECUTION ============
-async def run_game_async():
-    """Execute graph asynchronously with pygame UI"""
+async def run_single_game():
+    """Execute a single game asynchronously with pygame UI"""
     import uuid
 
+    # Create fresh agents for this game to avoid event loop closure issues
+    player_one_agent = ChatOllama(
+        model=player_one_model,
+        base_url="https://ollama.com",  # Cloud endpoint
+        client_kwargs={
+            "headers": {"Authorization": "Bearer " + os.getenv("OLLAMA_API_KEY")},
+            "timeout": 60.0  # Timeout in seconds
+        }
+    )
+
+    player_two_agent = SarvamChat(
+        model=player_two_model,
+        reasoning_effort="medium",
+        temperature=0.3,
+        max_retry=3,
+        wiki_grounding=False,
+        top_p=0.9
+    )
+
+    # Define node functions that capture fresh agents via closure
+    async def player_one_node(state: State):
+        print(f'{player_one_model} move:')
+
+        prompt = (PLAYER_TEMPLATE
+                  .replace("{{SYMBOL}}", "O")
+                  .replace("{{BOARD}}", str(state.board)))
+        prompt = SYSTEM_PROMPT + '\n' + prompt
+        response: AIMessage = await player_one_agent.ainvoke(prompt)
+
+        coord = _parse_coord(response.content)
+        if coord is None:
+            raise ValueError(f"unparsable move: {response}")
+        p1_token_used_till_now = state.player_one_token + get_token_used(response)
+
+        return Command(
+            update={"board": state.board,
+                    'last_player': "O",
+                    'moves': coord,
+                    'player_one_token': p1_token_used_till_now
+                    },
+            goto='coordinator_node'
+        )
+
+    async def player_two_node(state: State):
+        print(f'{player_two_model} move:')
+
+        # Run blocking human move in thread pool to avoid blocking event loop
+        loop = asyncio.get_running_loop()
+        coord = await loop.run_in_executor(None, lambda: get_human_move(state))
+
+        if coord is None:
+            raise ValueError(f"unparsable move: {coord}")
+
+        p2_token_used_till_now = state.player_two_token + 0
+        return Command(update={"board": state.board,
+                               'last_player': "X",
+                               'moves': coord,
+                               'player_two_token': p2_token_used_till_now},
+                       goto='coordinator_node')
+
+    # Build fresh graph with new node functions for this game
+    builder = (
+        StateGraph(State, context_schema=Context)
+        .add_node("coordinator_node", coordinator_node)
+        .add_node("player_one_node", player_one_node)
+        .add_node("player_two_node", player_two_node)
+        .add_edge(START, "coordinator_node")
+        .add_edge("player_one_node", "coordinator_node")
+        .add_edge("player_two_node", "coordinator_node")
+    )
+    graph = builder.compile()
+
+    # Run the game
     my_trace_id = str(uuid.uuid4())
     result = await graph.ainvoke(
         State(),
         config={
-            "callbacks": [langfuse_handler],
             "configurable": {"game_id": my_trace_id},
             "run_id": my_trace_id,
             "run_name": f"[{player_one_model}]_vs_[{player_two_model}]",
@@ -308,13 +292,37 @@ async def run_game_async():
     )
     print('*' * 20)
 
-    # Signal that game is complete
-    game_complete_event.set()
-
 
 def run_async_in_thread():
-    """Run the async game logic in a separate thread."""
-    asyncio.run(run_game_async())
+    """Run the async game logic in a separate thread with restart support."""
+    global continue_running
+
+    while continue_running:
+        try:
+            # Use new_event_loop for each game to avoid closed loop error
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            loop.run_until_complete(run_single_game())
+            loop.close()
+
+            # Game complete - wait for user action (restart or close)
+            if pygame_game.shutdown_event.is_set():
+                break
+
+            pygame_game.restart_event.wait()
+
+            # Check if user wants to restart or close
+            if pygame_game.restart_event.is_set() and continue_running:
+                pygame_game.reset_game()
+                pygame_game.restart_event.clear()
+            else:
+                break
+
+        except Exception as e:
+            print(f"Game error: {e}")
+            continue_running = False
+            pygame_game.shutdown_event.set()
+            break
 
 
 # ============ RUN ============
@@ -326,11 +334,13 @@ if __name__ == "__main__":
     game_thread = threading.Thread(target=run_async_in_thread, daemon=False)
     game_thread.start()
 
-    # Run pygame event loop in main thread until game completes or user quits
+    # Run pygame event loop in main thread - handles UI and button clicks
     try:
-        pygame_game.run_event_loop(stop_event=game_complete_event)
+        pygame_game.run_event_loop()
     finally:
+        # Signal to stop game
+        continue_running = False
+        pygame_game.restart_event.set()
         # Wait for game thread to complete
         game_thread.join(timeout=5)
         # Clean shutdown
-        get_client().shutdown()

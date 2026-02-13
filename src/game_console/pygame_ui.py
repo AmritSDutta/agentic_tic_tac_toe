@@ -24,13 +24,18 @@ class PygameGame:
         self.move_ready = threading.Event()
         self.human_move = None
         self.shutdown_event = threading.Event()
+        self.restart_event = threading.Event()
+
+        # Button regions: (x, y, width, height)
+        self.restart_btn = (150, 720, 140, 50)
+        self.close_btn = (310, 720, 140, 50)
 
     def start(self):
         """Initialize pygame - this must be called from main thread."""
         pygame.init()
         pygame.font.init()
-        self.screen = pygame.display.set_mode((600, 700))
-        pygame.display.set_caption("Tic-Tac-Toe: You are X")
+        self.screen = pygame.display.set_mode((600, 800))  # Extra space for buttons
+        pygame.display.set_caption("Tic-Tac-Toe: You (X) vs AI (O)")
         self.clock = pygame.time.Clock()
         self.running = True
 
@@ -40,12 +45,6 @@ class PygameGame:
         status_font = pygame.font.Font(None, 48)
 
         while self.running:
-            # Check if game is complete
-            if stop_event and stop_event.is_set():
-                time.sleep(3)  # Show final result for 3 seconds
-                self.running = False
-                break
-
             # Process pygame events
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
@@ -53,24 +52,40 @@ class PygameGame:
                     self.shutdown_event.set()
                     return
 
-                if event.type == pygame.MOUSEBUTTONDOWN and not self.game_over:
+                if event.type == pygame.MOUSEBUTTONDOWN:
                     x, y = pygame.mouse.get_pos()
-                    col = x // 200
-                    row = (y - 100) // 200
 
-                    if 0 <= row < 3 and 0 <= col < 3:
-                        # Quick check without lock - is cell empty and is it human's turn?
-                        with self.lock:
-                            cell_empty = self.board[row][col] == '.'
-                            is_human_turn = self.human_turn
+                    if self.game_over:
+                        # Check button clicks
+                        # Restart button
+                        if (self.restart_btn[0] <= x <= self.restart_btn[0] + self.restart_btn[2] and
+                            self.restart_btn[1] <= y <= self.restart_btn[1] + self.restart_btn[3]):
+                            self.restart_event.set()
+                        # Close button
+                        elif (self.close_btn[0] <= x <= self.close_btn[0] + self.close_btn[2] and
+                              self.close_btn[1] <= y <= self.close_btn[1] + self.close_btn[3]):
+                            self.restart_event.clear()  # Clear restart to avoid confusion
+                            self.running = False
+                            self.shutdown_event.set()
+                            return
+                    else:
+                        # Game in progress - check for board clicks
+                        col = x // 200
+                        row = (y - 100) // 200
 
-                        if cell_empty and is_human_turn:
-                            # Valid move - record it
+                        if 0 <= row < 3 and 0 <= col < 3:
+                            # Quick check without lock - is cell empty and is it human's turn?
                             with self.lock:
-                                self.board[row][col] = 'X'
-                                self.human_move = (row, col)
-                                self.human_turn = False
-                            self.move_ready.set()
+                                cell_empty = self.board[row][col] == '.'
+                                is_human_turn = self.human_turn
+
+                            if cell_empty and is_human_turn:
+                                # Valid move - record it
+                                with self.lock:
+                                    self.board[row][col] = 'X'
+                                    self.human_move = (row, col)
+                                    self.human_turn = False
+                                self.move_ready.set()
 
             # Draw everything
             self.screen.fill((240, 240, 240))
@@ -100,7 +115,31 @@ class PygameGame:
                 human_turn = self.human_turn
 
             if game_over:
+                # Draw status/result text first
                 status_text = game_status
+                status_surf = status_font.render(status_text, True, (0, 0, 0))
+                self.screen.blit(status_surf, (300 - status_surf.get_width() // 2, 30))
+
+                # Draw buttons on top of everything
+                btn_font = pygame.font.Font(None, 36)
+
+                # Restart button (green)
+                pygame.draw.rect(self.screen, (50, 150, 50), self.restart_btn, border_radius=10)
+                restart_text = btn_font.render("Restart", True, (255, 255, 255))
+                restart_rect = restart_text.get_rect(center=(
+                    self.restart_btn[0] + self.restart_btn[2] // 2,
+                    self.restart_btn[1] + self.restart_btn[3] // 2
+                ))
+                self.screen.blit(restart_text, restart_rect)
+
+                # Close button (red)
+                pygame.draw.rect(self.screen, (200, 50, 50), self.close_btn, border_radius=10)
+                close_text = btn_font.render("Close", True, (255, 255, 255))
+                close_rect = close_text.get_rect(center=(
+                    self.close_btn[0] + self.close_btn[2] // 2,
+                    self.close_btn[1] + self.close_btn[3] // 2
+                ))
+                self.screen.blit(close_text, close_rect)
             elif human_turn:
                 status_text = "Your turn (X) - Click a cell"
             elif current_player == 'O':
@@ -108,8 +147,9 @@ class PygameGame:
             else:
                 status_text = "AI thinking..."
 
-            status_surf = status_font.render(status_text, True, (0, 0, 0))
-            self.screen.blit(status_surf, (300 - status_surf.get_width() // 2, 50))
+            if not game_over:
+                status_surf = status_font.render(status_text, True, (0, 0, 0))
+                self.screen.blit(status_surf, (300 - status_surf.get_width() // 2, 50))
 
             pygame.display.flip()
             self.clock.tick(30)
@@ -138,6 +178,17 @@ class PygameGame:
             if game_status is not None:
                 self.game_over = True
                 self.game_status = game_status
+
+    def reset_game(self):
+        """Reset game state for a new game."""
+        with self.lock:
+            self.board = [['.' for _ in range(3)] for _ in range(3)]
+            self.current_player = None
+            self.game_over = False
+            self.game_status = ""
+            self.human_turn = False
+            self.human_move = None
+            self.restart_event.clear()
 
     def shutdown(self):
         """Clean shutdown."""
