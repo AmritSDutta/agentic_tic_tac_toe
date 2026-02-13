@@ -156,21 +156,23 @@ async def coordinator_node(state: State):
     # Update pygame display with new board state
     game_status = None
     if result == 'DRAW':
-        game_status = f"DRAW. Board: {state.board}"
+        game_status = f"DRAW"
     elif result in ('X', 'O'):
-        winner = player_two_model if result == 'X' else player_one_model
-        game_status = f"WINNER {winner}. Final: {state.board}"
+        winner = player_two_model if result == 'X' else 'AI'
+        game_status = f"WINNER {winner}"
     pygame_game.update_board(state.board, state.last_player, game_status)
 
     if result == 'DRAW':
+        print(f'{result}:\n{state.board}')
         return Command(
-            update={"game_status": f"DRAW. Board: {state.board}"},
+            update={"game_status": f"DRAW."},
             goto=END
         )
     if result in ('X', 'O'):
         winner = player_two_model if result == 'X' else player_one_model
+        print(state.board)
         return Command(
-            update={"game_status": f"WINNER {winner}. Final: {state.board}"},
+            update={"game_status": f"WINNER {winner}"},
             goto=END
         )
 
