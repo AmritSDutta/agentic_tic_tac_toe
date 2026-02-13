@@ -1,24 +1,27 @@
 import asyncio
 import os
-import re
 from dataclasses import dataclass, field
 
 from dotenv import load_dotenv
 from langchain_core.messages import AIMessage
-from langchain_ollama import ChatOllama
 from langfuse import get_client
 from langfuse import observe
 from langfuse.langchain import CallbackHandler
 from langgraph.graph import StateGraph, START, END
 from langgraph.types import Command
-from sarvam.chat.model import SarvamChat
 from typing_extensions import TypedDict
+
+from src.llms.llm_options import get_llm
+from src.tic_tac_toe.core_functions import valid_move, check_winner, parse_coord
+from src.tic_tac_toe.tic_tac_toe_human import get_token_used
+import warnings
+warnings.filterwarnings("ignore", category=UserWarning, module="pygame.pkgdata")
 
 load_dotenv()
 
-player_one_model = 'minimax-m2.5:cloud'
-player_two_model = 'sarvam-m'
-os.environ["LANGSMITH_TRACING_V2"] = 'true'
+player_one_model = 'minimax'
+player_two_model = 'sarvam'
+os.environ["LANGSMITH_TRACING_V2"] = 'false'
 os.environ["LANGSMITH_PROJECT"] = f"[{player_one_model}]_vs_[{player_two_model}]"
 
 # Verify connection
@@ -77,53 +80,8 @@ Return only:
 No other text, punctuation, or formatting.
 """
 
-
-def _parse_coord(s: str) -> tuple[int, int] | None:
-    m = re.search(r"(-?\d+)\s*[, ]\s*(-?\d+)", s)
-    if not m:
-        return None
-    return int(m.group(1)), int(m.group(2))
-
-
-def _valid_move(board, i, j):
-    return 0 <= i < 3 and 0 <= j < 3 and board[i][j] == '.'
-
-
-def _check_winner(b):
-    lines = ([(r, c) for c in range(3)] for r in range(3))  # rows generator
-    wins = []
-    for r in range(3):
-        if b[r][0] == b[r][1] == b[r][2] != '.':
-            return b[r][0]
-    for c in range(3):
-        if b[0][c] == b[1][c] == b[2][c] != '.':
-            return b[0][c]
-    if b[0][0] == b[1][1] == b[2][2] != '.':
-        return b[0][0]
-    if b[0][2] == b[1][1] == b[2][0] != '.':
-        return b[0][2]
-    if all(cell != '.' for row in b for cell in row):
-        return 'DRAW'
-    return None
-
-
-player_one_agent = ChatOllama(
-    model=player_one_model,
-    base_url="https://ollama.com",  # Cloud endpoint
-    client_kwargs={
-        "headers": {"Authorization": "Bearer " + os.getenv("OLLAMA_API_KEY")},
-        "timeout": 60.0  # Timeout in seconds
-    }
-)
-
-player_two_agent = SarvamChat(
-    model=player_two_model,
-    reasoning_effort="low",
-    temperature=0.1,
-    max_retry=3,
-    wiki_grounding=False,
-    top_p=0.9
-)
+player_one_agent = get_llm(player_one_model)
+player_two_agent = get_llm(player_two_model)
 
 
 class Context(TypedDict):
@@ -160,7 +118,7 @@ async def coordinator_node(state: State):
     i, j = state.moves
     symbol = state.last_player
     # Validate move
-    if not _valid_move(state.board, i, j):
+    if not valid_move(state.board, i, j):
         return Command(
             update={"game_status": f"Invalid move {(i, j)} by {symbol}"},
             goto=END
@@ -169,7 +127,7 @@ async def coordinator_node(state: State):
     state.board[i][j] = symbol  # Apply move
     state.print_box()
 
-    result = _check_winner(state.board)  # Check win conditions
+    result = check_winner(state.board)  # Check win conditions
     if result == 'DRAW':
         return Command(
             update={"game_status": f"DRAW. Board: {state.board}"},
@@ -190,10 +148,6 @@ async def coordinator_node(state: State):
     )
 
 
-def get_token_used(response: AIMessage):
-    return response.usage_metadata['total_tokens']
-
-
 @observe(name=player_one_model, as_type='agent')
 async def player_one_node(state: State):
     print(f'{player_one_model} move:')
@@ -204,7 +158,7 @@ async def player_one_node(state: State):
     prompt = SYSTEM_PROMPT + '\n' + prompt
     response: AIMessage = await player_one_agent.ainvoke(prompt)
 
-    coord = _parse_coord(response.content)
+    coord = parse_coord(response.content)
     if coord is None:
         raise ValueError(f"unparsable move: {response}")
     p1_token_used_till_now = state.player_one_token + get_token_used(response)
@@ -228,7 +182,7 @@ async def player_two_node(state: State):
     prompt = SYSTEM_PROMPT + '\n' + prompt
     # Manually create a span for the LLM call
     response: AIMessage = await player_two_agent.ainvoke(prompt)
-    coord = _parse_coord(response.content)
+    coord = parse_coord(response.content)
     if coord is None:
         raise ValueError(f"unparsable move: {coord}")
 
