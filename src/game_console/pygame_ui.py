@@ -80,10 +80,12 @@ class PygameGame:
 
     def set_model_selection_enabled(self, enabled: bool):
         """Enable or disable model selection dropdown."""
+        print(f"[DEBUG] set_model_selection_enabled({enabled}) called")
         with self.model_lock:
             self.model_selection_enabled = enabled
             if not enabled:
                 self.dropdown_open = False  # Close dropdown when disabled
+        print(f"[DEBUG] model_selection_enabled is now: {self.model_selection_enabled}")
 
     def update_score(self, winner: str):
         """Update score when a game completes.

@@ -51,6 +51,7 @@ def get_llm(name: str | None = None):
 
 def _get_chat_ollama_instance(model: str):
     import os
+    assert os.getenv("OLLAMA_API_KEY") is not None
     return ChatOllama(
         model=model,
         base_url="https://ollama.com",  # Cloud endpoint

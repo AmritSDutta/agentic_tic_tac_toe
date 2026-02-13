@@ -122,8 +122,8 @@ async def coordinator_node(state: State):
             pygame_game.update_score('Human')
         else:
             pygame_game.update_score('AI')
-        # Re-enable model selection when game ends
-        pygame_game.set_model_selection_enabled(True)
+    # Re-enable model selection when game ends (both DRAW and WINNER)
+    pygame_game.set_model_selection_enabled(True)
     pygame_game.update_board(state.board, state.last_player, game_status)
 
     if result == 'DRAW':
